@@ -250,10 +250,8 @@ header{padding:1.5rem 0 1rem;display:flex;align-items:flex-end;justify-content:s
 
     <!-- LEADERBOARD PANEL -->
     <div class="panel active" id="panel-lb">
-      <div class="add-row" id="add-row">
-        <input type="text" id="new-name" placeholder="Thêm người chơi..." maxlength="30"/>
-        <button onclick="addPlayer()">+ Thêm</button>
-      </div>
+      <!-- add-row ẩn: login tự tạo player -->
+      <div class="add-row hidden" id="add-row"></div>
       <div id="lb-list"><div class="empty">Đang tải...</div></div>
     </div>
 
@@ -377,7 +375,7 @@ const ADMIN_PASS = "khoa";
 // ================================================================
 // STATE
 // ================================================================
-let currentUser = null, isAdmin = false;
+let currentUser = null, isAdmin = false, currentPlayerId = '';
 let db = null, fbConnected = false;
 let players = {};
 // weekTemplate[dow 0-5] = [{ name, room, time, color }, ...]
@@ -401,11 +399,13 @@ const MONTHS    = ['T1','T2','T3','T4','T5','T6','T7','T8','T9','T10','T11','T12
 // ================================================================
 window.onload = () => {
   loadLocal();
+  currentPlayerId = localStorage.getItem('op_pid') || '';
   const saved = localStorage.getItem('op_user');
   if (saved) {
     const u = JSON.parse(saved);
     currentUser = u.name; isAdmin = u.isAdmin;
     boot();
+    if (!isAdmin) autoJoin(currentUser);
   }
 };
 
@@ -447,6 +447,37 @@ function doLogin() {
   isAdmin = (pass === ADMIN_PASS);
   localStorage.setItem('op_user', JSON.stringify({ name, isAdmin }));
   boot();
+  // Nếu không phải admin thì tự động thêm vào danh sách nếu chưa có
+  if (!isAdmin) {
+    autoJoin(name);
+  }
+}
+
+function autoJoin(name) {
+  // Chờ Firebase có data (players đã load) rồi mới xử lý
+  const tryJoin = (attempt) => {
+    if (!db || !fbConnected) {
+      if (attempt < 20) setTimeout(() => tryJoin(attempt + 1), 500);
+      return;
+    }
+    const entry = Object.entries(players).find(([,p]) => p.name?.toLowerCase() === name.toLowerCase());
+    if (!entry) {
+      // Chưa có → thêm mới
+      const id = 'p_' + Date.now();
+      currentPlayerId = id;
+      db.ref('players/' + id).set({ name, days: {} });
+    } else {
+      // Đã có → lấy id
+      currentPlayerId = entry[0];
+    }
+    localStorage.setItem('op_pid', currentPlayerId || '');
+  };
+  // Lắng nghe players 1 lần để đảm bảo data đã có trước khi join
+  if (db) {
+    db.ref('players').once('value', () => tryJoin(0));
+  } else {
+    setTimeout(() => autoJoin(name), 800);
+  }
 }
 
 function logout() { localStorage.removeItem('op_user'); location.reload(); }
@@ -460,7 +491,7 @@ function boot() {
   document.getElementById('header-name').textContent = currentUser + (isAdmin ? ' ★' : '');
 
   // Leaderboard: chỉ admin mới thêm/xóa người chơi
-  if (!isAdmin) document.getElementById('add-row').classList.add('hidden');
+  // add-row ẩn với tất cả (login tự tạo player)
 
   // TKB: ai cũng xem được, chỉ admin mới chỉnh sửa
   document.getElementById('tkb-no-access').classList.add('hidden');
@@ -536,6 +567,13 @@ function initFirebase(cfgOverride) {
     db.ref('players').on('value', s => {
       players = s.val() || {};
       renderLB();
+      // Kiểm tra bị kick (chỉ sau khi đã join xong)
+      if (!isAdmin && currentPlayerId && Object.keys(players).length > 0 && !players[currentPlayerId]) {
+        showToast('Bạn đã bị admin kick!');
+        localStorage.removeItem('op_user');
+        localStorage.removeItem('op_pid');
+        setTimeout(() => location.reload(), 2000);
+      }
     });
     listenTimetable();
   } catch(e) {
@@ -612,18 +650,20 @@ function fbDel(path) {
 
 function addPlayer() {
   if (!isAdmin) return;
-  const inp = document.getElementById('new-name');
-  const name = inp.value.trim(); if(!name) return;
-  if (Object.values(players).find(p => p.name?.toLowerCase()===name.toLowerCase())) { showToast('Tên đã có!'); return; }
-  fbSet('players/p_'+Date.now(), { name, days:{} });
-  inp.value = '';
+  // Không dùng nữa, giữ lại để tương thích
 }
-function removePlayer(id) { fbDel('players/'+id); }
+function removePlayer(id) {
+  if (!isAdmin) return;
+  // Tìm tên người bị kick
+  const kicked = players[id]?.name;
+  fbDel('players/'+id);
+  showToast((kicked || 'Người chơi') + ' đã bị kick!');
+}
 function toggleOp(id, key) {
   const v = players[id]?.days?.[key] || 0;
   fbSet(`players/${id}/days/${key}`, v ? 0 : 1);
 }
-document.getElementById('new-name').addEventListener('keydown', e => { if(e.key==='Enter') addPlayer(); });
+// new-name removed — players auto-join on login
 
 // ================================================================
 // LEADERBOARD RENDER
@@ -634,7 +674,7 @@ function totalOps(p){ return Object.values(p.days||{}).reduce((s,v)=>s+(v||0),0)
 function renderLB() {
   const list = document.getElementById('lb-list');
   const arr = Object.entries(players).map(([id,p])=>({id,...p,total:totalOps(p)})).sort((a,b)=>b.total-a.total);
-  if (!arr.length) { list.innerHTML='<div class="empty">Chưa có ai ộp cả...<br>Admin thêm người chơi để bắt đầu!</div>'; return; }
+  if (!arr.length) { list.innerHTML='<div class="empty">Chưa có ai ộp cả...<br>Đăng nhập để tham gia!</div>'; return; }
   const maxOps = arr[0].total||1, totalDays = daysInMonth(CY,CM);
   list.innerHTML = arr.map((p,rank) => {
     const isTop = rank===0&&p.total>0;
@@ -652,7 +692,7 @@ function renderLB() {
           ${isTop?'<div class="opper">ỘPPER</div>':''}
         </div>
         <div class="lb-count"><div class="lb-num">${p.total}</div><div class="lb-label">lần ộp</div></div>
-        ${isAdmin?`<button class="del-btn" onclick="removePlayer('${p.id}')">×</button>`:''}
+        ${isAdmin && p.name !== currentUser ?`<button class="del-btn" title="Kick" onclick="removePlayer('${p.id}')">kick</button>`:''}
       </div>
       <div class="prog-wrap"><div class="prog" style="width:${Math.round((p.total/maxOps)*100)}%"></div></div>
       <div class="cal-wrap">
