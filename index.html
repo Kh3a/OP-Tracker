@@ -225,7 +225,22 @@ header{padding:1.5rem 0 1rem;display:flex;align-items:flex-end;justify-content:s
 
     <div class="status-bar">
       <span class="status-dot" id="fb-dot"></span>
-      <span id="fb-status">Đang kết nối...</span>
+      <span id="fb-status" style="flex:1">Đang kết nối...</span>
+      <button id="fb-reset-btn" onclick="showFbReset()" class="hidden" style="background:none;border:1px solid var(--border2);border-radius:6px;color:var(--accent);font-family:'Space Mono',monospace;font-size:10px;padding:3px 10px;cursor:pointer;white-space:nowrap">Cấu hình lại</button>
+    </div>
+    <!-- Firebase reset card (admin only, shown on error) -->
+    <div id="fb-reset-card" class="hidden" style="background:var(--s1);border:1px solid var(--red);border-radius:12px;padding:1.25rem;margin-bottom:1rem;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">
+        <span style="font-size:14px;font-weight:700;color:var(--red)">Lỗi kết nối Firebase</span>
+        <button onclick="hideFbReset()" style="background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer">✕</button>
+      </div>
+      <p style="font-size:12px;color:var(--muted);font-family:'Space Mono',monospace;line-height:1.7;margin-bottom:.75rem">Kiểm tra lại Project ID và API Key. Lấy tại <a href="https://console.firebase.google.com" target="_blank" style="color:var(--accent)">Firebase Console</a> → Project Settings.</p>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:10px">
+        <input type="text" id="fb-reset-pid" placeholder="Project ID" style="height:38px;background:var(--s2);border:1px solid var(--border);border-radius:7px;color:var(--text);font-family:'Space Mono',monospace;font-size:12px;padding:0 12px;outline:none;width:100%"/>
+        <input type="text" id="fb-reset-key" placeholder="API Key" style="height:38px;background:var(--s2);border:1px solid var(--border);border-radius:7px;color:var(--text);font-family:'Space Mono',monospace;font-size:12px;padding:0 12px;outline:none;width:100%"/>
+        <input type="text" id="fb-reset-url" placeholder="Database URL (copy từ Realtime Database console)" style="height:38px;background:var(--s2);border:1px solid var(--border);border-radius:7px;color:var(--text);font-family:'Space Mono',monospace;font-size:12px;padding:0 12px;outline:none;width:100%"/>
+      </div>
+      <button onclick="resetFbConfig()" style="height:38px;padding:0 20px;background:var(--accent);border:none;border-radius:7px;color:#0b0908;font-family:'Syne',sans-serif;font-size:13px;font-weight:700;cursor:pointer">Lưu &amp; Kết nối lại</button>
     </div>
 
     <div class="tabs">
@@ -257,12 +272,13 @@ header{padding:1.5rem 0 1rem;display:flex;align-items:flex-end;justify-content:s
           <div class="fb-fields">
             <input type="text" id="fb-pid" placeholder="Project ID (VD: op-squad-abc123)"/>
             <input type="text" id="fb-key" placeholder="API Key (từ Project Settings → General)"/>
+            <input type="text" id="fb-url" placeholder="Database URL — copy từ Realtime Database (VD: https://xxx-default-rtdb.asia-southeast1.firebasedatabase.app)"/>
           </div>
           <button class="btn-setup" onclick="saveFbConfig()">Lưu &amp; Kết nối Firebase</button>
-          <div class="fb-hint">Thông tin này được lưu trên máy bạn, không ai khác thấy.<br>Sau khi lưu, gửi link web + project info cho bạn bè để họ cùng dùng.</div>
+          <div class="fb-hint">Database URL: vào Realtime Database → copy URL ở đầu trang (có thể là .firebaseio.com hoặc .asia-southeast1.firebasedatabase.app)</div>
         </div>
 
-        <div class="info-box">
+        <div class="info-box" id="tkb-info-hint">
           <strong>Môn học thường</strong> → thêm 1 lần, tự lặp mọi tuần theo đúng thứ đó.<br>
           <strong>Tiết học bù</strong> → thêm thủ công từng ngày cụ thể, không lặp tuần sau.
         </div>
@@ -399,8 +415,25 @@ function loadLocal() {
 }
 
 function saveTT() {
+  // Lưu cả localStorage (fallback) lẫn Firebase
   localStorage.setItem('op_week', JSON.stringify(weekTemplate));
   localStorage.setItem('op_bu',   JSON.stringify(dayBu));
+  if (db && fbConnected) {
+    db.ref('timetable/week').set(weekTemplate);
+    db.ref('timetable/bu').set(dayBu);
+  }
+}
+
+function listenTimetable() {
+  if (!db) return;
+  db.ref('timetable/week').on('value', s => {
+    const val = s.val();
+    if (val) { weekTemplate = val; renderWeek(); renderModalList && modalKey && renderModalList(); }
+  });
+  db.ref('timetable/bu').on('value', s => {
+    const val = s.val();
+    if (val) { dayBu = val; renderWeek(); renderModalList && modalKey && renderModalList(); }
+  });
 }
 
 // ================================================================
@@ -426,16 +459,16 @@ function boot() {
   document.getElementById('main-app').classList.remove('hidden');
   document.getElementById('header-name').textContent = currentUser + (isAdmin ? ' ★' : '');
 
+  // Leaderboard: chỉ admin mới thêm/xóa người chơi
+  if (!isAdmin) document.getElementById('add-row').classList.add('hidden');
+
+  // TKB: ai cũng xem được, chỉ admin mới chỉnh sửa
+  document.getElementById('tkb-no-access').classList.add('hidden');
+  document.getElementById('tkb-admin').classList.remove('hidden');
+  // Setup card luôn ẩn vì đã hard-code config
+  document.getElementById('fb-setup-card').classList.add('hidden');
   if (!isAdmin) {
-    document.getElementById('add-row').classList.add('hidden');
-    document.getElementById('tkb-admin').classList.add('hidden');
-    document.getElementById('tkb-no-access').classList.remove('hidden');
-  } else {
-    document.getElementById('tkb-no-access').classList.add('hidden');
-    document.getElementById('tkb-admin').classList.remove('hidden');
-    // Show/hide firebase setup card
-    const cfg = getFbCfg();
-    document.getElementById('fb-setup-card').classList.toggle('hidden', !!cfg);
+    document.getElementById('tkb-info-hint').classList.add('hidden');
   }
 
   initFirebase();
@@ -446,22 +479,33 @@ function boot() {
 // FIREBASE CONFIG
 // ================================================================
 function getFbCfg() {
+  // Config mặc định hard-coded — override bằng localStorage nếu có
+  const DEFAULT_CFG = {
+    apiKey: "AIzaSyCH3JCIA8jTBX7mYld3a8y8l6lUwqxNKkI",
+    authDomain: "optracker-2f3e9.firebaseapp.com",
+    databaseURL: "https://optracker-2f3e9-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId: "optracker-2f3e9",
+    storageBucket: "optracker-2f3e9.appspot.com",
+    messagingSenderId: "", appId: ""
+  };
   try {
     const c = JSON.parse(localStorage.getItem('op_fb') || 'null');
     if (c?.projectId && c?.apiKey) return c;
   } catch(e) {}
-  return null;
+  return DEFAULT_CFG;
 }
 
 function saveFbConfig() {
   const pid = document.getElementById('fb-pid').value.trim();
   const key = document.getElementById('fb-key').value.trim();
+  const url = document.getElementById('fb-url').value.trim();
   if (!pid) { showToast('Nhập Project ID!'); return; }
   if (!key) { showToast('Nhập API Key!'); return; }
+  if (!url) { showToast('Nhập Database URL!'); return; }
   const cfg = {
     apiKey: key,
     authDomain: `${pid}.firebaseapp.com`,
-    databaseURL: `https://${pid}-default-rtdb.firebaseio.com`,
+    databaseURL: url,
     projectId: pid,
     storageBucket: `${pid}.appspot.com`,
     messagingSenderId: '', appId: ''
@@ -493,6 +537,7 @@ function initFirebase(cfgOverride) {
       players = s.val() || {};
       renderLB();
     });
+    listenTimetable();
   } catch(e) {
     setStatus(false, 'Lỗi: ' + e.message.slice(0,60));
     try { players = JSON.parse(localStorage.getItem('op_local_players') || '{}'); } catch(x) {}
@@ -503,6 +548,45 @@ function initFirebase(cfgOverride) {
 function setStatus(ok, msg) {
   document.getElementById('fb-dot').className = 'status-dot' + (ok ? ' ok' : '');
   document.getElementById('fb-status').textContent = msg;
+  if (isAdmin) {
+    document.getElementById('fb-reset-btn').classList.toggle('hidden', ok);
+  }
+}
+
+function showFbReset() {
+  const cfg = getFbCfg();
+  if (cfg) {
+    document.getElementById('fb-reset-pid').value = cfg.projectId || '';
+    document.getElementById('fb-reset-key').value = cfg.apiKey || '';
+    document.getElementById('fb-reset-url').value = cfg.databaseURL || '';
+  }
+  document.getElementById('fb-reset-card').classList.remove('hidden');
+}
+
+function hideFbReset() {
+  document.getElementById('fb-reset-card').classList.add('hidden');
+}
+
+function resetFbConfig() {
+  const pid = document.getElementById('fb-reset-pid').value.trim();
+  const key = document.getElementById('fb-reset-key').value.trim();
+  const url = document.getElementById('fb-reset-url').value.trim();
+  if (!pid || !key || !url) { showToast('Điền đủ thông tin!'); return; }
+  const cfg = {
+    apiKey: key,
+    authDomain: pid + '.firebaseapp.com',
+    databaseURL: url,
+    projectId: pid,
+    storageBucket: pid + '.appspot.com',
+    messagingSenderId: '', appId: ''
+  };
+  localStorage.setItem('op_fb', JSON.stringify(cfg));
+  hideFbReset();
+  showToast('Đã lưu! Đang kết nối lại...');
+  // Re-init firebase
+  firebase.apps.forEach(app => app.delete());
+  db = null; fbConnected = false;
+  initFirebase(cfg);
 }
 
 // ================================================================
@@ -593,7 +677,6 @@ function dfmt(d){ return `${String(d.getDate()).padStart(2,'0')}/${String(d.getM
 function changeWeek(dir){ weekOffset+=dir; renderWeek(); }
 
 function renderWeek() {
-  if (!isAdmin) return;
   const dates = getWeekDates(weekOffset);
   document.getElementById('week-label').textContent = `${dfmt(dates[0])} – ${dfmt(dates[5])}`;
   document.getElementById('tkb-title').textContent =
@@ -613,7 +696,10 @@ function renderWeek() {
         ${s.time?`<div class="sp-sub">${esc(s.time)}</div>`:''}
       </div>`)
     ].join('');
-    return `<div class="day-col${isToday?' today-col':''}" onclick="openModal('${key}',${i})">
+    // Chỉ admin mới click được để chỉnh sửa
+    const clickHandler = isAdmin ? `onclick="openModal('${key}',${i})"` : '';
+    const cursor = isAdmin ? '' : 'style="cursor:default"';
+    return `<div class="day-col${isToday?' today-col':''}" ${clickHandler} ${cursor}>
       <div class="day-col-head">
         <div class="day-name">${DAY_NAMES[i]}</div>
         <div class="day-date">${d.getDate()}</div>
@@ -627,6 +713,7 @@ function renderWeek() {
 // MODAL
 // ================================================================
 function openModal(key, dow) {
+  if (!isAdmin) return;
   modalKey = key; modalDow = Number(dow);
   const parts = key.split('-');
   const d = new Date(+parts[0],+parts[1],+parts[2]);
